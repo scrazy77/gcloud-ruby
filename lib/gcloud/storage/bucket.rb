@@ -15,6 +15,7 @@
 
 require "gcloud/storage/bucket/acl"
 require "gcloud/storage/bucket/list"
+require "gcloud/storage/bucket/cors"
 require "gcloud/storage/file"
 require "gcloud/upload"
 
@@ -75,33 +76,61 @@ module Gcloud
       end
 
       ##
-      # The location of the bucket.
-      # Object data for objects in the bucket resides in physical
-      # storage within this region. Defaults to US.
-      # See the developer's guide for the authoritative list.
-      #
-      # https://cloud.google.com/storage/docs/concepts-techniques
-      def location
-        @gapi["location"]
-      end
-
-      ##
       # Creation time of the bucket.
       def created_at
         @gapi["timeCreated"]
       end
 
       ##
-      # The CORS configuration for a static website served from the
-      # bucket. For more information, see {Cross-Origin Resource
+      # Returns the current CORS configuration for a static website served from
+      # the bucket. For more information, see {Cross-Origin Resource
       # Sharing (CORS)}[https://cloud.google.com/storage/docs/cross-origin].
-      # Returns an array of hashes containing the attributes specified for the
-      # Bucket resource field
+      # The return value is a frozen (unmodifiable) array of hashes containing
+      # the attributes specified for the Bucket resource field
       # {cors}[https://cloud.google.com/storage/docs/json_api/v1/buckets#cors].
+      #
+      # This method also accepts a block for updating the bucket's CORS rules.
+      # See Bucket::Cors for details.
+      #
+      # === Examples
+      #
+      # Retrieving the bucket's CORS rules.
+      #
+      #   require "gcloud"
+      #
+      #   gcloud = Gcloud.new
+      #   storage = gcloud.storage
+      #
+      #   bucket = storage.bucket "my-todo-app"
+      #   bucket.cors #=> [{"origin"=>["http://example.org"],
+      #               #     "method"=>["GET","POST","DELETE"],
+      #               #     "responseHeader"=>["X-My-Custom-Header"],
+      #               #     "maxAgeSeconds"=>3600}]
+      #
+      # Updating the bucket's CORS rules inside a block.
+      #
+      #   require "gcloud"
+      #
+      #   gcloud = Gcloud.new
+      #   storage = gcloud.storage
+      #   bucket = storage.bucket "my-todo-app"
+      #
+      #   bucket.update do |b|
+      #     b.cors do |c|
+      #       c.add_rule ["http://example.org", "https://example.org"],
+      #                  "*",
+      #                  response_headers: ["X-My-Custom-Header"],
+      #                  max_age: 3600
+      #     end
+      #   end
+      #
       def cors
-        g = @gapi
-        g = g.to_hash if g.respond_to? :to_hash
-        g["cors"] ||= [] # TODO: consider freezing the array so no updates?
+        if block_given?
+          cors_builder = Bucket::Cors.new @gapi["cors"]
+          yield cors_builder
+          self.cors = cors_builder if cors_builder.changed?
+        end
+        deep_dup_and_freeze @gapi["cors"]
       end
 
       ##
@@ -116,27 +145,14 @@ module Gcloud
       end
 
       ##
-      # The bucket's storage class. This defines how objects in the bucket are
-      # stored and determines the SLA and the cost of storage. Values include
-      # +STANDARD+, +NEARLINE+, and +DURABLE_REDUCED_AVAILABILITY+.
-      def storage_class
-        @gapi["storageClass"]
-      end
-
-      ##
-      # Whether {Object
-      # Versioning}[https://cloud.google.com/storage/docs/object-versioning] is
-      # enabled for the bucket.
-      def versioning?
-        !@gapi["versioning"].nil? && @gapi["versioning"]["enabled"]
-      end
-
-      ##
-      # Updates whether {Object
-      # Versioning}[https://cloud.google.com/storage/docs/object-versioning] is
-      # enabled for the bucket. (+Boolean+)
-      def versioning= new_versioning
-        patch_gapi! versioning: new_versioning
+      # The location of the bucket.
+      # Object data for objects in the bucket resides in physical
+      # storage within this region. Defaults to US.
+      # See the developer's guide for the authoritative list.
+      #
+      # https://cloud.google.com/storage/docs/concepts-techniques
+      def location
+        @gapi["location"]
       end
 
       ##
@@ -175,6 +191,30 @@ module Gcloud
       end
 
       ##
+      # The bucket's storage class. This defines how objects in the bucket are
+      # stored and determines the SLA and the cost of storage. Values include
+      # +STANDARD+, +NEARLINE+, and +DURABLE_REDUCED_AVAILABILITY+.
+      def storage_class
+        @gapi["storageClass"]
+      end
+
+      ##
+      # Whether {Object
+      # Versioning}[https://cloud.google.com/storage/docs/object-versioning] is
+      # enabled for the bucket.
+      def versioning?
+        !@gapi["versioning"].nil? && @gapi["versioning"]["enabled"]
+      end
+
+      ##
+      # Updates whether {Object
+      # Versioning}[https://cloud.google.com/storage/docs/object-versioning] is
+      # enabled for the bucket. (+Boolean+)
+      def versioning= new_versioning
+        patch_gapi! versioning: new_versioning
+      end
+
+      ##
       # The index page returned from a static website served from the bucket
       # when a site visitor requests the top level directory. For more
       # information, see {How to Host a Static Website
@@ -210,6 +250,52 @@ module Gcloud
       # (+String+)
       def website_404= website_404
         patch_gapi! website_404: website_404
+      end
+
+      ##
+      # Updates the bucket with changes made in the given block in a single
+      # PATCH request. The following attributes may be set: #cors=,
+      # #logging_bucket=, #logging_prefix=, #versioning=, #website_main=, and
+      # #website_404=. In addition, the #cors configuration accessible in the
+      # block is completely mutable and will be included in the request.
+      #
+      # === Examples
+      #
+      #   require "gcloud"
+      #
+      #   gcloud = Gcloud.new
+      #   storage = gcloud.storage
+      #
+      #   bucket = storage.bucket "my-bucket"
+      #   bucket.update do |b|
+      #     b.website_main = "index.html"
+      #     b.website_404 = "not_found.html"
+      #     b.cors[0]["method"] = ["GET","POST","DELETE"]
+      #     b.cors[1]["responseHeader"] << "X-Another-Custom-Header"
+      #   end
+      #
+      # New CORS rules can also be added in a nested block. See Bucket::Cors for
+      # details.
+      #
+      #   require "gcloud"
+      #
+      #   gcloud = Gcloud.new
+      #   storage = gcloud.storage
+      #   bucket = storage.bucket "my-todo-app"
+      #
+      #   bucket.update do |b|
+      #     b.cors do |c|
+      #       c.add_rule ["http://example.org", "https://example.org"],
+      #                  "*",
+      #                  response_headers: ["X-My-Custom-Header"],
+      #                  max_age: 300
+      #     end
+      #   end
+      #
+      def update
+        updater = Updater.new @gapi["cors"]
+        yield updater
+        patch_gapi! updater.body_options unless updater.body_options.empty?
       end
 
       ##
@@ -680,6 +766,55 @@ module Gcloud
         end
         return if chunk_size.zero?
         chunk_size
+      end
+
+      ##
+      # Given nil, empty array, a gapi array of hashes, or any value, returns a
+      # deeply dup'd and frozen array of simple hashes or values (not gapi
+      # objects.)
+      def deep_dup_and_freeze array
+        return [].freeze if array.nil? || array.empty?
+        array = Array(array.dup)
+        array = array.map do |h|
+          h = h.to_hash if h.respond_to? :to_hash
+          h.dup.freeze
+        end
+        array.freeze
+      end
+
+      ##
+      # Yielded to a block to accumulate changes for a patch request.
+      class Updater
+        attr_reader :body_options
+        ##
+        # Create an Updater object.
+        def initialize cors
+          @cors = cors ? Array(cors.dup) : []
+          @cors = @cors.map { |x| x.to_hash if x.respond_to? :to_hash }
+          @body_options = {}
+        end
+
+        BUCKET_ATTRS = [:cors, :logging_bucket, :logging_prefix, :versioning,
+                        :website_main, :website_404]
+
+        BUCKET_ATTRS.each do |attr|
+          define_method "#{attr}=" do |arg|
+            body_options[attr] = arg
+          end
+        end
+
+        ##
+        # Return CORS for mutation. Also adds CORS to @body_options so that it
+        # is included in the patch request.
+        def cors
+          body_options[:cors] ||= @cors
+          if block_given?
+            cors_builder = Bucket::Cors.new body_options[:cors]
+            yield cors_builder
+            body_options[:cors] = cors_builder if cors_builder.changed?
+          end
+          body_options[:cors]
+        end
       end
     end
   end
