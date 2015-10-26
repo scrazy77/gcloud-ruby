@@ -226,12 +226,12 @@ module Gcloud
 
       ##
       # Download contents of a file.
-      def download_file bucket_name, file_path
+      def download_file bucket_name, file_path, options = {}
+        query = { bucket: bucket_name, object: file_path }
+        query[:generation] = options[:generation] if options[:generation]
         @client.execute(
           api_method: @storage.objects.get,
-          parameters: { bucket: bucket_name,
-                        object: file_path,
-                        alt: :media }
+          parameters: query
         )
       end
 
